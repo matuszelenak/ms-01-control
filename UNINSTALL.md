@@ -6,8 +6,10 @@ fancurve is installed as a Debian package. Stopping/removing it returns the
 fans to hardware automatic control.
 
 ```bash
-apt remove fancurve     # remove the service and binary, keep /etc/fancurve
-apt purge fancurve      # ... and also delete the saved fan curves
+apt remove fancurve     # remove the service and binary, keep the data
+apt purge fancurve      # ... and also delete /etc/fancurve (config, CPU
+                        #     profile, chip snapshot) and /var/lib/fancurve
+                        #     (NVMe wear history database)
 ```
 
 ## Build toolchains

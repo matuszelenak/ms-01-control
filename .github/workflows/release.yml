@@ -34,10 +34,11 @@ jobs:
         with:
           workspaces: server
 
-      - name: Build frontend
+      - name: Check & build frontend
         working-directory: frontend
         run: |
           npm ci
+          npm run check
           npm run build
 
       - name: Run tests

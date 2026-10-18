@@ -9,12 +9,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-const HWMON_ROOT: &str = "/sys/class/hwmon";
+use crate::paths::Paths;
 
-/// Find all hwmon device directories whose `name` matches a predicate.
-fn find_chips(pred: impl Fn(&str) -> bool) -> Vec<PathBuf> {
+/// Find all hwmon device directories under `root` whose `name` matches a
+/// predicate.
+fn find_chips(root: &Path, pred: impl Fn(&str) -> bool) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(HWMON_ROOT) else {
+    let Ok(entries) = fs::read_dir(root) else {
         return out;
     };
     for entry in entries.flatten() {
@@ -214,27 +215,17 @@ fn apply_snapshot(fans: &mut [PwmFan], path: &Path) {
     }
 }
 
-/// Look up an NVMe drive's model name via `smartctl -i`, falling back to the
-/// sysfs `model` attribute. Called once at startup.
-fn nvme_model(chip: &Path, dev: &str) -> Option<String> {
-    let smartctl = std::process::Command::new("smartctl")
-        .arg("-i")
-        .arg(format!("/dev/{dev}"))
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout).lines().find_map(|line| {
-                line.strip_prefix("Model Number:")
-                    .map(|m| m.trim().to_string())
-            })
-        });
-    smartctl.or_else(|| {
-        fs::read_to_string(chip.join("device/model"))
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    })
+/// Look up an NVMe drive's model name from the controller's sysfs attributes,
+/// falling back to the hwmon `device/model` file on exotic setups.
+fn nvme_model(nvme_root: &Path, chip: &Path, dev: &str) -> Option<String> {
+    [nvme_root.join(dev).join("model"), chip.join("device/model")]
+        .into_iter()
+        .find_map(|path| {
+            fs::read_to_string(path)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
 }
 
 /// Firmware chip state captured before this service first touched it.
@@ -273,120 +264,33 @@ impl Hardware {
     /// Discover the nct6798 fan controller, the CPU package sensor and all
     /// NVMe composite sensors. `snapshot_path` persists the firmware fan
     /// state across daemon restarts within one boot.
-    pub fn discover(snapshot_path: &Path) -> Result<Hardware> {
-        let nct = find_chips(|n| n.starts_with("nct67"))
+    ///
+    /// A missing fan controller or CPU sensor is not fatal: the monitoring
+    /// features (drive wear, CPU profile) keep working without them.
+    pub fn discover(paths: &Paths, snapshot_path: &Path) -> Result<Hardware> {
+        let nct = find_chips(&paths.hwmon, |n| n.starts_with("nct67"))
             .into_iter()
-            .next()
-            .context("no nct67xx hwmon chip found (is the nct6775 driver loaded?)")?;
-        tracing::info!("fan controller chip: {}", nct.display());
-
-        // The MS-01 has two chassis fans wired to pwm1/fan1 and pwm2/fan2.
+            .next();
         let mut fans = Vec::new();
-        for index in [1u32, 2] {
-            let pwm = nct.join(format!("pwm{index}"));
-            let enable = nct.join(format!("pwm{index}_enable"));
-            let fan_input = nct.join(format!("fan{index}_input"));
-            if !pwm.exists() || !enable.exists() {
-                bail!("missing {} or {}", pwm.display(), enable.display());
-            }
-            let original_enable = read_u32(&enable)?;
 
-            // Enumerate the chip's Smart Fan IV curve registers and snapshot
-            // the firmware-programmed values so "auto" can restore them.
-            let mut auto_points = Vec::new();
-            let mut original_auto_points = Vec::new();
-            for point in 1.. {
-                let temp = nct.join(format!("pwm{index}_auto_point{point}_temp"));
-                let pwm = nct.join(format!("pwm{index}_auto_point{point}_pwm"));
-                if !temp.exists() || !pwm.exists() {
-                    break;
-                }
-                let temp_val: i64 = read_trimmed(&temp)?
-                    .parse()
-                    .with_context(|| format!("parsing {}", temp.display()))?;
-                original_auto_points.push((temp_val, read_u32(&pwm)?));
-                auto_points.push(AutoPointFiles { temp, pwm });
-            }
-            tracing::info!(
-                "fan {index}: original pwm{index}_enable = {original_enable}, \
-                 {} hardware curve points",
-                auto_points.len()
+        if let Some(nct) = &nct {
+            tracing::info!("fan controller chip: {}", nct.display());
+            discover_fans(nct, &mut fans)?;
+        } else {
+            tracing::warn!(
+                "no nct67xx hwmon chip under {}; fan control disabled \
+                 (is the nct6775 driver loaded?)",
+                paths.hwmon.display()
             );
-            fans.push(PwmFan {
-                index,
-                pwm,
-                enable,
-                fan_input,
-                original_enable,
-                auto_points,
-                original_auto_points,
-            });
         }
 
         let mut sensors = Vec::new();
-
-        // CPU: every coretemp channel. temp1 is "Package id 0" (the overall
-        // package temperature) and is the only fan-curve control input; the
-        // per-core channels are informational.
-        for chip in find_chips(|n| n == "coretemp") {
-            let mut channels: Vec<u32> = fs::read_dir(&chip)
-                .map(|entries| {
-                    entries
-                        .flatten()
-                        .filter_map(|e| {
-                            let name = e.file_name().to_string_lossy().into_owned();
-                            name.strip_prefix("temp")?
-                                .strip_suffix("_input")?
-                                .parse()
-                                .ok()
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            channels.sort_unstable();
-            for ch in channels {
-                let label = fs::read_to_string(chip.join(format!("temp{ch}_label")))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|_| format!("temp{ch}"));
-                let is_package = label.starts_with("Package");
-                sensors.push(TempSensor {
-                    label,
-                    kind: if is_package { "cpu" } else { "core" },
-                    model: None,
-                    control: is_package,
-                    input: chip.join(format!("temp{ch}_input")),
-                });
-            }
+        discover_sensors(paths, &mut sensors);
+        if !fans.is_empty() {
+            apply_snapshot(&mut fans, snapshot_path);
         }
-
-        // NVMe drives: temp1 is the "Composite" sensor. Display only — SSD
-        // composite temps are coarse (integer Kelvin) and react slowly, so
-        // they are not used for fan control.
-        for chip in find_chips(|n| n == "nvme") {
-            let input = chip.join("temp1_input");
-            if !input.exists() {
-                continue;
-            }
-            // device symlink points at the nvme device, use its name (nvme0..)
-            let dev = chip
-                .join("device")
-                .canonicalize()
-                .ok()
-                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "nvme?".into());
-            sensors.push(TempSensor {
-                model: nvme_model(&chip, &dev),
-                label: dev,
-                kind: "nvme",
-                control: false,
-                input,
-            });
-        }
-
-        apply_snapshot(&mut fans, snapshot_path);
-
         if !sensors.iter().any(|s| s.control) {
-            bail!("no CPU package temperature sensor found (needed for fan control)");
+            tracing::warn!("no CPU package temperature sensor found: fan curves cannot run");
         }
         for s in &sensors {
             tracing::info!(
@@ -394,7 +298,10 @@ impl Hardware {
                 s.label,
                 s.kind,
                 if s.control { ", control" } else { "" },
-                s.model.as_deref().map(|m| format!(", {m}")).unwrap_or_default(),
+                s.model
+                    .as_deref()
+                    .map(|m| format!(", {m}"))
+                    .unwrap_or_default(),
             );
         }
 
@@ -415,5 +322,278 @@ impl Hardware {
                 );
             }
         }
+    }
+}
+
+/// Enumerate the PWM fans of the Super I/O chip and snapshot their firmware
+/// state. The MS-01 has two chassis fans wired to pwm1/fan1 and pwm2/fan2.
+fn discover_fans(nct: &Path, fans: &mut Vec<PwmFan>) -> Result<()> {
+    for index in [1u32, 2] {
+        let pwm = nct.join(format!("pwm{index}"));
+        let enable = nct.join(format!("pwm{index}_enable"));
+        let fan_input = nct.join(format!("fan{index}_input"));
+        if !pwm.exists() || !enable.exists() {
+            bail!("missing {} or {}", pwm.display(), enable.display());
+        }
+        let original_enable = read_u32(&enable)?;
+
+        // Enumerate the chip's Smart Fan IV curve registers and snapshot
+        // the firmware-programmed values so "auto" can restore them.
+        let mut auto_points = Vec::new();
+        let mut original_auto_points = Vec::new();
+        for point in 1.. {
+            let temp = nct.join(format!("pwm{index}_auto_point{point}_temp"));
+            let pwm = nct.join(format!("pwm{index}_auto_point{point}_pwm"));
+            if !temp.exists() || !pwm.exists() {
+                break;
+            }
+            let temp_val: i64 = read_trimmed(&temp)?
+                .parse()
+                .with_context(|| format!("parsing {}", temp.display()))?;
+            original_auto_points.push((temp_val, read_u32(&pwm)?));
+            auto_points.push(AutoPointFiles { temp, pwm });
+        }
+        tracing::info!(
+            "fan {index}: original pwm{index}_enable = {original_enable}, \
+             {} hardware curve points",
+            auto_points.len()
+        );
+        fans.push(PwmFan {
+            index,
+            pwm,
+            enable,
+            fan_input,
+            original_enable,
+            auto_points,
+            original_auto_points,
+        });
+    }
+    Ok(())
+}
+
+/// Enumerate the temperature sensors: every coretemp channel and the NVMe
+/// composite sensors.
+fn discover_sensors(paths: &Paths, sensors: &mut Vec<TempSensor>) {
+    // CPU: every coretemp channel. temp1 is "Package id 0" (the overall
+    // package temperature) and is the only fan-curve control input; the
+    // per-core channels are informational.
+    for chip in find_chips(&paths.hwmon, |n| n == "coretemp") {
+        let mut channels: Vec<u32> = fs::read_dir(&chip)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        name.strip_prefix("temp")?
+                            .strip_suffix("_input")?
+                            .parse()
+                            .ok()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        channels.sort_unstable();
+        for ch in channels {
+            let label = fs::read_to_string(chip.join(format!("temp{ch}_label")))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| format!("temp{ch}"));
+            let is_package = label.starts_with("Package");
+            sensors.push(TempSensor {
+                label,
+                kind: if is_package { "cpu" } else { "core" },
+                model: None,
+                control: is_package,
+                input: chip.join(format!("temp{ch}_input")),
+            });
+        }
+    }
+
+    // NVMe drives: temp1 is the "Composite" sensor. Display only — SSD
+    // composite temps are coarse (integer Kelvin) and react slowly, so they
+    // are not used for fan control. The label is the controller name
+    // (nvme0..), which the UI uses to join temperatures with wear data.
+    for chip in find_chips(&paths.hwmon, |n| n == "nvme") {
+        let input = chip.join("temp1_input");
+        if !input.exists() {
+            continue;
+        }
+        // device symlink points at the nvme device, use its name (nvme0..)
+        let dev = chip
+            .join("device")
+            .canonicalize()
+            .ok()
+            .and_then(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "nvme?".into());
+        sensors.push(TempSensor {
+            model: nvme_model(&paths.nvme, &chip, &dev),
+            label: dev,
+            kind: "nvme",
+            control: false,
+            input,
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    struct FakeSysfs {
+        dir: PathBuf,
+    }
+
+    impl FakeSysfs {
+        fn new(tag: &str) -> FakeSysfs {
+            let dir =
+                std::env::temp_dir().join(format!("fancurve-hwmon-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(dir.join("hwmon")).unwrap();
+            fs::create_dir_all(dir.join("nvme/nvme0")).unwrap();
+            fs::write(dir.join("nvme/nvme0/model"), "Samsung SSD 990 PRO 4TB\n").unwrap();
+            FakeSysfs { dir }
+        }
+
+        fn paths(&self) -> Paths {
+            Paths {
+                hwmon: self.dir.join("hwmon"),
+                nvme: self.dir.join("nvme"),
+                ..Default::default()
+            }
+        }
+
+        fn write(&self, path: impl AsRef<std::path::Path>, value: impl AsRef<[u8]>) {
+            let p = self.dir.join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, value).unwrap();
+        }
+
+        fn fan_chip(&self) {
+            self.write("hwmon/hwmon5/name", "nct6798\n");
+            for index in [1, 2] {
+                self.write(format!("hwmon/hwmon5/pwm{index}_enable"), "5\n");
+                self.write(format!("hwmon/hwmon5/pwm{index}"), "128\n");
+                self.write(format!("hwmon/hwmon5/fan{index}_input"), "1200\n");
+                for point in 1..=5 {
+                    self.write(
+                        format!("hwmon/hwmon5/pwm{index}_auto_point{point}_temp"),
+                        format!("{}\n", 40000 + point * 10000),
+                    );
+                    self.write(
+                        format!("hwmon/hwmon5/pwm{index}_auto_point{point}_pwm"),
+                        format!("{}\n", point * 50),
+                    );
+                }
+            }
+        }
+
+        fn cpu_chip(&self) {
+            self.write("hwmon/hwmon4/name", "coretemp\n");
+            self.write("hwmon/hwmon4/temp1_input", "52000\n");
+            self.write("hwmon/hwmon4/temp1_label", "Package id 0\n");
+            self.write("hwmon/hwmon4/temp2_input", "50000\n");
+            self.write("hwmon/hwmon4/temp2_label", "Core 0\n");
+        }
+
+        fn nvme_chip(&self) {
+            self.write("hwmon/hwmon1/name", "nvme\n");
+            self.write("hwmon/hwmon1/temp1_input", "41850\n");
+            // The driver links device -> .../nvme/nvme0
+            let target = self.dir.join("nvme/nvme0");
+            symlink(&target, self.dir.join("hwmon/hwmon1/device")).unwrap();
+        }
+    }
+
+    impl Drop for FakeSysfs {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn discovers_fans_sensors_and_snapshots_firmware_state() {
+        let sysfs = FakeSysfs::new("full");
+        sysfs.fan_chip();
+        sysfs.cpu_chip();
+        sysfs.nvme_chip();
+        let snapshot = sysfs.dir.join("chip-snapshot.json");
+
+        let hw = Hardware::discover(&sysfs.paths(), &snapshot).unwrap();
+
+        assert_eq!(hw.fans.len(), 2);
+        assert_eq!(hw.fans[0].index, 1);
+        assert_eq!(hw.fans[0].original_enable, 5);
+        assert_eq!(hw.fans[0].auto_point_count(), 5);
+
+        let cpu = hw.sensors.iter().find(|s| s.kind == "cpu").unwrap();
+        assert_eq!(cpu.label, "Package id 0");
+        assert!(cpu.control);
+        assert_eq!(cpu.read().unwrap(), 52.0);
+        assert_eq!(hw.sensors.iter().filter(|s| s.kind == "core").count(), 1);
+
+        let nvme = hw.sensors.iter().find(|s| s.kind == "nvme").unwrap();
+        assert_eq!(nvme.label, "nvme0");
+        assert_eq!(nvme.model.as_deref(), Some("Samsung SSD 990 PRO 4TB"));
+        assert!(!nvme.control);
+
+        // The firmware state is persisted for later restarts.
+        let saved: ChipSnapshot =
+            serde_json::from_str(&fs::read_to_string(&snapshot).unwrap()).unwrap();
+        assert_eq!(saved.fans.len(), 2);
+        assert_eq!(saved.fans[0].enable, 5);
+        assert_eq!(saved.fans[0].auto_points.len(), 5);
+    }
+
+    #[test]
+    fn runs_without_a_fan_controller() {
+        // A machine without the nct67xx driver is still usable for monitoring.
+        let sysfs = FakeSysfs::new("nofan");
+        sysfs.cpu_chip();
+        sysfs.nvme_chip();
+        let hw = Hardware::discover(&sysfs.paths(), &sysfs.dir.join("snap.json")).unwrap();
+        assert!(hw.fans.is_empty());
+        assert!(hw.sensors.iter().any(|s| s.control));
+        // No snapshot is written when no fans were found.
+        assert!(!sysfs.dir.join("snap.json").exists());
+    }
+
+    #[test]
+    fn runs_without_any_sensors() {
+        let sysfs = FakeSysfs::new("empty");
+        let hw = Hardware::discover(&sysfs.paths(), &sysfs.dir.join("snap.json")).unwrap();
+        assert!(hw.fans.is_empty());
+        assert!(hw.sensors.is_empty());
+    }
+
+    #[test]
+    fn snapshot_from_the_same_boot_wins() {
+        let sysfs = FakeSysfs::new("snapshot");
+        sysfs.fan_chip();
+        let snapshot = sysfs.dir.join("chip-snapshot.json");
+        // Simulate a previous daemon run of this boot that programmed its own
+        // curve and left the chip in Smart Fan IV mode.
+        let points = vec![
+            (50000, 60),
+            (60000, 70),
+            (70000, 80),
+            (80000, 90),
+            (90000, 100),
+        ];
+        let previous = ChipSnapshot {
+            boot_id: current_boot_id(),
+            fans: vec![
+                FanSnapshot { index: 1, enable: 5, auto_points: points.clone() },
+                FanSnapshot { index: 2, enable: 5, auto_points: points.clone() },
+            ],
+        };
+        fs::write(&snapshot, serde_json::to_string(&previous).unwrap()).unwrap();
+
+        let hw = Hardware::discover(&sysfs.paths(), &snapshot).unwrap();
+        // The persisted (true firmware) values win over the live chip values.
+        assert_eq!(
+            hw.fans[0].original_auto_points,
+            previous.fans[0].auto_points
+        );
+        assert_eq!(hw.fans[0].original_enable, 5);
     }
 }

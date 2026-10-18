@@ -1,8 +1,11 @@
 #!/bin/sh
 set -e
 
-# The unit uses ReadWritePaths=/etc/fancurve, which must exist before the
-# service can start; the daemon then writes its default config there.
-mkdir -p /etc/fancurve
+# The unit uses ReadWritePaths=/etc/fancurve and StateDirectory=/var/lib/fancurve,
+# which must exist before the service can start; the daemon then writes its
+# default config and the wear history database there.
+mkdir -p /etc/fancurve /var/lib/fancurve
+chmod 0755 /etc/fancurve
+chmod 0750 /var/lib/fancurve
 
 #DEBHELPER#

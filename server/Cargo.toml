@@ -1,8 +1,8 @@
 [package]
 name = "fancurve"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Fan curve controller for MinisForum MS-01"
+description = "Fan, NVMe wear and CPU profile controller for MinisForum MS-01"
 license = "Unlicense"
 
 [dependencies]
@@ -15,6 +15,7 @@ mime_guess = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [profile.release]
 lto = true
@@ -26,14 +27,17 @@ maintainer = "Matus Zelenak <Matus.Zelenak@swan.sk>"
 copyright = "2026, Matus Zelenak"
 license-file = ["../LICENSE", "0"]
 extended-description = """\
-Background service with a web UI for controlling the chassis fans of a \
-MinisForum MS-01. Reads CPU temperatures from hwmon sysfs, drives the fans \
-through the nct6798 Super I/O chip following a user-editable fan curve, and \
-serves the Svelte frontend on port 8090."""
+Background service with a web UI for a MinisForum MS-01. It drives the \
+chassis fans through the nct6798 Super I/O chip following a user-editable fan \
+curve, monitors NVMe drive wear (SMART) and keeps its history in SQLite, and \
+switches the CPU between performance and power-efficiency profiles. Serves \
+the Svelte frontend on port 8090."""
 section = "admin"
 priority = "optional"
-# smartctl is used for NVMe model names (sysfs fallback exists)
-recommends = "smartmontools"
+# smartctl is the source of the NVMe wear data shown in the UI
+depends = "smartmontools"
+# nvme-cli is an optional fallback when smartctl cannot read a drive
+recommends = "nvme-cli"
 assets = [
     ["target/release/fancurve", "usr/bin/fancurve", "755"],
     ["../README.md", "usr/share/doc/fancurve/README.md", "644"],

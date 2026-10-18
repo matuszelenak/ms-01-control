@@ -31,6 +31,62 @@ pub enum FanMode {
     Manual,
 }
 
+/// CPU power profile the daemon can enforce.
+///
+/// The profiles combine the cpufreq governor, the energy-performance
+/// preference (EPP) hint and the turbo toggle; see [`CpuProfile::governor`],
+/// [`CpuProfile::epp`] and [`CpuProfile::turbo`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CpuProfile {
+    /// Maximum performance: performance governor, EPP `performance`, turbo on.
+    Performance,
+    /// Balanced: powersave governor with an EPP hint towards performance,
+    /// turbo on.
+    Balanced,
+    /// Power efficiency: powersave governor, EPP `power`, turbo off.
+    Efficiency,
+}
+
+impl CpuProfile {
+    pub const ALL: [CpuProfile; 3] = [
+        CpuProfile::Performance,
+        CpuProfile::Balanced,
+        CpuProfile::Efficiency,
+    ];
+
+    /// cpufreq governor this profile wants.
+    pub fn governor(self) -> &'static str {
+        match self {
+            CpuProfile::Performance => "performance",
+            CpuProfile::Balanced | CpuProfile::Efficiency => "powersave",
+        }
+    }
+
+    /// Energy-performance preference this profile wants.
+    pub fn epp(self) -> &'static str {
+        match self {
+            CpuProfile::Performance => "performance",
+            CpuProfile::Balanced => "balance_performance",
+            CpuProfile::Efficiency => "power",
+        }
+    }
+
+    /// Whether turbo boost should be enabled.
+    pub fn turbo(self) -> bool {
+        !matches!(self, CpuProfile::Efficiency)
+    }
+}
+
+/// CPU power-management section of the config.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CpuConfig {
+    /// Profile applied at start-up and whenever it is changed in the UI.
+    /// `None` means the daemon leaves the CPU settings alone (monitor only).
+    #[serde(default)]
+    pub profile: Option<CpuProfile>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FanConfig {
     pub mode: FanMode,
@@ -90,10 +146,7 @@ impl FanConfig {
         (0..count)
             .map(|i| {
                 let temp = first + (last - first) * i as f64 / (count - 1) as f64;
-                CurvePoint {
-                    temp,
-                    pwm: interpolate(&self.hw_curve, temp),
-                }
+                CurvePoint { temp, pwm: interpolate(&self.hw_curve, temp) }
             })
             .collect()
     }
@@ -105,6 +158,24 @@ pub struct Config {
     pub poll_interval_ms: u64,
     /// Per-fan configuration, index 0 = fan1, index 1 = fan2.
     pub fans: Vec<FanConfig>,
+    /// CPU power profile management.
+    #[serde(default)]
+    pub cpu: CpuConfig,
+    /// Seconds between NVMe wear samples; 0 disables periodic sampling (the
+    /// daemon still samples once at start-up and on manual refresh).
+    #[serde(default = "default_wear_interval_secs")]
+    pub wear_sample_interval_secs: u64,
+    /// Wear history retention in days; 0 keeps everything forever.
+    #[serde(default = "default_wear_retention_days")]
+    pub wear_retention_days: u32,
+}
+
+fn default_wear_interval_secs() -> u64 {
+    3600
+}
+
+fn default_wear_retention_days() -> u32 {
+    1095
 }
 
 impl Default for Config {
@@ -121,6 +192,9 @@ impl Default for Config {
         ];
         Config {
             poll_interval_ms: 2000,
+            cpu: CpuConfig::default(),
+            wear_sample_interval_secs: default_wear_interval_secs(),
+            wear_retention_days: default_wear_retention_days(),
             fans: vec![
                 FanConfig {
                     mode: FanMode::Auto,
@@ -182,6 +256,15 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         if !(250..=60_000).contains(&self.poll_interval_ms) {
             bail!("poll_interval_ms must be between 250 and 60000");
+        }
+        // 0 disables periodic sampling; otherwise sample at most once a minute.
+        if self.wear_sample_interval_secs != 0
+            && !(60..=86_400).contains(&self.wear_sample_interval_secs)
+        {
+            bail!("wear_sample_interval_secs must be 0 or between 60 and 86400");
+        }
+        if self.wear_retention_days != 0 && !(7..=3650).contains(&self.wear_retention_days) {
+            bail!("wear_retention_days must be 0 or between 7 and 3650");
         }
         if self.fans.is_empty() || self.fans.len() > 8 {
             bail!("expected 1-8 fan configs, got {}", self.fans.len());
@@ -274,7 +357,7 @@ mod tests {
     #[test]
     fn hw_resampling() {
         let f = fan(&[(0.0, 0.0)]); // software curve irrelevant here
-        // matching count passes through unchanged
+                                    // matching count passes through unchanged
         assert_eq!(f.hw_points(5), f.hw_curve);
         // resampled to 3 points: ends preserved, middle interpolated
         let three = fan(&[(0.0, 0.0)]).hw_points(3);
@@ -283,6 +366,73 @@ mod tests {
         assert_eq!(three[2], f.hw_curve[4]);
         assert_eq!(three[1].temp, 65.0);
         assert_eq!(three[1].pwm, interpolate(&f.hw_curve, 65.0));
+    }
+
+    #[test]
+    fn loads_configs_without_the_new_fields() {
+        // A config written by 0.2.x has neither the cpu nor the wear settings.
+        let json = r#"{
+            "poll_interval_ms": 2000,
+            "fans": [
+                { "mode": "auto", "manual_pwm": 50,
+                  "curve": [{ "temp": 40.0, "pwm": 20.0 }, { "temp": 80.0, "pwm": 100.0 }] }
+            ]
+        }"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.cpu.profile, None);
+        assert_eq!(cfg.wear_sample_interval_secs, 3600);
+        assert_eq!(cfg.wear_retention_days, 1095);
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn cpu_profile_round_trips_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&CpuProfile::Performance).unwrap(),
+            r#""performance""#
+        );
+        assert_eq!(
+            serde_json::to_string(&CpuProfile::Balanced).unwrap(),
+            r#""balanced""#
+        );
+        assert_eq!(
+            serde_json::to_string(&CpuProfile::Efficiency).unwrap(),
+            r#""efficiency""#
+        );
+        let p: CpuProfile = serde_json::from_str(r#""efficiency""#).unwrap();
+        assert_eq!(p, CpuProfile::Efficiency);
+        let cpu: CpuConfig = serde_json::from_str(r#"{ "profile": null }"#).unwrap();
+        assert_eq!(cpu.profile, None);
+    }
+
+    #[test]
+    fn validates_wear_settings() {
+        let cfg = Config {
+            wear_sample_interval_secs: 0, // disabled is allowed
+            ..Config::default()
+        };
+        assert!(cfg.validate().is_ok());
+
+        let cfg = Config {
+            wear_sample_interval_secs: 5, // too frequent
+            ..Config::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg = Config { wear_sample_interval_secs: 86_401, ..Config::default() };
+        assert!(cfg.validate().is_err());
+
+        let cfg = Config {
+            wear_retention_days: 0, // keep everything
+            ..Config::default()
+        };
+        assert!(cfg.validate().is_ok());
+
+        let cfg = Config {
+            wear_retention_days: 3, // too short
+            ..Config::default()
+        };
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

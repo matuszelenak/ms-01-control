@@ -1,5 +1,5 @@
 [Unit]
-Description=Fan curve controller for MinisForum MS-01
+Description=Fan, drive wear and CPU profile control for MinisForum MS-01
 After=multi-user.target
 
 [Service]
@@ -11,8 +11,10 @@ RestartSec=5
 TimeoutStopSec=10
 
 # Hardening (/sys stays writable under ProtectSystem=strict; the config
-# directory needs an explicit exception)
+# directory and the wear history database need explicit exceptions)
 ProtectSystem=strict
+StateDirectory=fancurve
+StateDirectoryMode=0750
 ReadWritePaths=/etc/fancurve
 ProtectHome=true
 PrivateTmp=true
