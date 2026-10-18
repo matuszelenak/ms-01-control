@@ -372,7 +372,7 @@ mod tests {
     /// knob and verify apply() writes the expected values.
     #[test]
     fn applies_profile_to_fake_sysfs() {
-        let root = std::env::temp_dir().join(format!("fancurve-cpu-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ms01ctl-cpu-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for cpu in [0, 1] {
             let dir = root.join(format!("cpu{cpu}/cpufreq"));
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn unsupported_governor_warns() {
-        let root = std::env::temp_dir().join(format!("fancurve-cpu-warn-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ms01ctl-cpu-warn-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dir = root.join("cpu0/cpufreq");
         fs::create_dir_all(&dir).unwrap();

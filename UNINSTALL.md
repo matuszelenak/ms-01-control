@@ -1,14 +1,14 @@
 # Uninstalling
 
-## The fancurve service
+## The ms01ctl service
 
-fancurve is installed as a Debian package. Stopping/removing it returns the
+ms01ctl is installed as a Debian package. Stopping/removing it returns the
 fans to hardware automatic control.
 
 ```bash
-apt remove fancurve     # remove the service and binary, keep the data
-apt purge fancurve      # ... and also delete /etc/fancurve (config, CPU
-                        #     profile, chip snapshot) and /var/lib/fancurve
+apt remove ms01ctl     # remove the service and binary, keep the data
+apt purge ms01ctl      # ... and also delete /etc/ms01ctl (config, CPU
+                        #     profile, chip snapshot) and /var/lib/ms01ctl
                         #     (NVMe wear history database)
 ```
 
@@ -22,8 +22,8 @@ point there; Node is an unpacked official tarball). Nothing was added to your
 To remove them:
 
 ```bash
-rm -rf /root/fancurve/.toolchain
+rm -rf <project dir>/.toolchain
 ```
 
-Removing the whole project directory (`rm -rf /root/fancurve`) also removes
-them, since they are contained within it.
+Removing the whole project directory also removes them, since they are
+contained within it.

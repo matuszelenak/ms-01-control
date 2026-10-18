@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// Default config location; override with the FANCURVE_CONFIG env var.
-pub const DEFAULT_CONFIG_PATH: &str = "/etc/fancurve/config.json";
+/// Default config location; override with the MS01CTL_CONFIG env var.
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/ms01ctl/config.json";
 
 /// One point of a fan curve: at `temp` °C run the fan at `pwm` percent.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -215,7 +215,7 @@ impl Default for Config {
 
 impl Config {
     pub fn path() -> PathBuf {
-        std::env::var_os("FANCURVE_CONFIG")
+        std::env::var_os("MS01CTL_CONFIG")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH))
     }

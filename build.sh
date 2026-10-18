@@ -13,4 +13,4 @@ echo "==> building frontend"
 echo "==> building server (frontend gets embedded into the binary)"
 (cd server && cargo build --release)
 
-echo "==> done: server/target/release/fancurve"
+echo "==> done: server/target/release/ms01ctl"

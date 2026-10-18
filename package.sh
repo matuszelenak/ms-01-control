@@ -13,6 +13,6 @@ echo "==> building frontend"
 echo "==> building .deb"
 (cd server && cargo deb)
 
-deb=$(ls -t server/target/debian/fancurve_*.deb | head -1)
+deb=$(ls -t server/target/debian/ms01ctl_*.deb | head -1)
 echo "==> package ready: $deb"
 echo "    install with: apt install ./$deb"

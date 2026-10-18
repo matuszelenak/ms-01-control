@@ -1,4 +1,4 @@
-# fancurve — MS-01 monitoring & control
+# ms01ctl — MS-01 monitoring & control
 
 Background service + web UI for a MinisForum MS-01 running Linux. One small
 Rust (axum) binary does three jobs and serves a Svelte frontend:
@@ -43,12 +43,12 @@ no kernel modules, no long-running subprocesses.
   - `manual` — fixed duty cycle.
 - **Firmware state snapshot**: the BIOS-programmed fan settings are captured
   at the first start of each boot and persisted
-  (`/etc/fancurve/chip-snapshot.json`, keyed by boot id), so `auto` restores
+  (`/etc/ms01ctl/chip-snapshot.json`, keyed by boot id), so `auto` restores
   the true BIOS curve even after the daemon crashed while in hardware mode.
 - **Failsafes**: if no temperature can be read in curve mode the fans go to
   100%; on shutdown (SIGTERM/Ctrl-C) all fans are returned to hardware auto.
-- **Config** is persisted as JSON at `/etc/fancurve/config.json` (override
-  with `FANCURVE_CONFIG`), written atomically, validated on load and on every
+- **Config** is persisted as JSON at `/etc/ms01ctl/config.json` (override
+  with `MS01CTL_CONFIG`), written atomically, validated on load and on every
   API update.
 
 If the nct67xx chip is missing (driver not loaded, unsupported board) the
@@ -63,7 +63,7 @@ keep working.
   cycles, unsafe shutdowns, available spare, media errors, error-log entries,
   composite temperature and the SMART critical-warning flag.
 - **History**: readings are appended to SQLite at
-  `/var/lib/fancurve/history.db` (override or disable with `FANCURVE_DB`;
+  `/var/lib/ms01ctl/history.db` (override or disable with `MS01CTL_DB`;
   WAL mode, one row per drive). A row is only written when the endurance
   figures (percentage used, bytes written, spare, media errors, critical
   warning) actually changed, so manual refreshes do not flood the table.
@@ -105,7 +105,7 @@ Three profiles, applied to every cpufreq policy and the turbo knob:
 
 ## Web UI
 
-`http://<host>:8090` (override with `FANCURVE_LISTEN`, e.g. `127.0.0.1:9000`).
+`http://<host>:8090` (override with `MS01CTL_LISTEN`, e.g. `127.0.0.1:9000`).
 
 - Live temperatures polled every 2 s: CPU package (the control input) with
   all per-core temps, plus fan RPM / duty per fan.
@@ -135,7 +135,7 @@ Three profiles, applied to every cpufreq policy and the turbo knob:
 
 ## Configuration
 
-`/etc/fancurve/config.json` (created with defaults on first start):
+`/etc/ms01ctl/config.json` (created with defaults on first start):
 
 ```json
 {
@@ -172,17 +172,17 @@ Configs written by older versions load unchanged: `cpu`, `wear_*` and
 
 ## Environment variables
 
-| Variable                | Default                     | Purpose                                    |
-| ----------------------- | --------------------------- | ------------------------------------------ |
-| `FANCURVE_CONFIG`       | `/etc/fancurve/config.json` | Config file (and its `chip-snapshot.json`) |
-| `FANCURVE_LISTEN`       | `0.0.0.0:8090`              | HTTP listen address                        |
-| `FANCURVE_DB`           | `/var/lib/fancurve/history.db` | Wear history DB; empty string disables it |
-| `FANCURVE_SYSFS_HWMON`  | `/sys/class/hwmon`          | hwmon root (testing)                       |
-| `FANCURVE_SYSFS_NVME`   | `/sys/class/nvme`           | NVMe controller root (testing)             |
-| `FANCURVE_SYSFS_CPU`    | `/sys/devices/system/cpu`   | cpufreq root (testing)                     |
-| `FANCURVE_SMARTCTL`     | `smartctl`                  | smartctl binary                            |
-| `FANCURVE_NVME_CLI`     | `nvme`                      | nvme-cli binary (fallback)                 |
-| `RUST_LOG`              | `fancurve=info`             | Log filter                                 |
+| Variable              | Default                       | Purpose                                    |
+| --------------------- | ----------------------------- | ------------------------------------------ |
+| `MS01CTL_CONFIG`      | `/etc/ms01ctl/config.json`    | Config file (and its `chip-snapshot.json`) |
+| `MS01CTL_LISTEN`      | `0.0.0.0:8090`                | HTTP listen address                        |
+| `MS01CTL_DB`          | `/var/lib/ms01ctl/history.db` | Wear history DB; empty string disables it  |
+| `MS01CTL_SYSFS_HWMON` | `/sys/class/hwmon`            | hwmon root (testing)                       |
+| `MS01CTL_SYSFS_NVME`  | `/sys/class/nvme`             | NVMe controller root (testing)             |
+| `MS01CTL_SYSFS_CPU`   | `/sys/devices/system/cpu`     | cpufreq root (testing)                     |
+| `MS01CTL_SMARTCTL`    | `smartctl`                    | smartctl binary                            |
+| `MS01CTL_NVME_CLI`    | `nvme`                        | nvme-cli binary (fallback)                 |
+| `RUST_LOG`            | `ms01ctl=info`                | Log filter                                 |
 
 ## Building
 
@@ -194,7 +194,7 @@ installed system-wide (see `UNINSTALL.md`).
 ```
 
 The release binary is fully self-contained (static assets embedded via
-rust-embed, SQLite compiled in): `server/target/release/fancurve`.
+rust-embed, SQLite compiled in): `server/target/release/ms01ctl`.
 
 ## Packaging & installing
 
@@ -203,10 +203,10 @@ rust-embed, SQLite compiled in): `server/target/release/fancurve`.
 ./install.sh   # package.sh + apt install
 ```
 
-The package (`server/target/debian/fancurve_*.deb`, built with cargo-deb)
+The package (`server/target/debian/ms01ctl_*.deb`, built with cargo-deb)
 contains the self-sufficient binary, the systemd unit and this README;
 `postinst` enables and starts the service, `apt purge` also removes
-`/etc/fancurve` and `/var/lib/fancurve` (config, CPU profile and wear
+`/etc/ms01ctl` and `/var/lib/ms01ctl` (config, CPU profile and wear
 history). `smartmontools` is a dependency (wear data); `nvme-cli` is an
 optional fallback.
 
@@ -230,8 +230,8 @@ tree (and a fake `smartctl`) that mirrors the real machine, so the whole
 service can be exercised on any Linux box:
 
 ```bash
-./dev/fake-sysfs.sh          # creates /tmp/fancurve-fake
-source /tmp/fancurve-fake/env.sh
+./dev/fake-sysfs.sh          # creates /tmp/ms01ctl-fake
+source /tmp/ms01ctl-fake/env.sh
 cd server && cargo run
 ```
 

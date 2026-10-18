@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "fancurve=info".into()),
+                .unwrap_or_else(|_| "ms01ctl=info".into()),
         )
         .init();
 
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     tokio::spawn(control::run_wear_sampler(state.clone()));
 
     // HTTP server.
-    let listen = std::env::var("FANCURVE_LISTEN").unwrap_or_else(|_| "0.0.0.0:8090".into());
+    let listen = std::env::var("MS01CTL_LISTEN").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
         .with_context(|| format!("binding {listen}"))?;

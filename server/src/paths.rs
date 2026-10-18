@@ -32,16 +32,16 @@ impl Default for Paths {
 }
 
 impl Paths {
-    /// Default paths, with `FANCURVE_SYSFS_*`, `FANCURVE_SMARTCTL` and
-    /// `FANCURVE_NVME_CLI` overrides applied.
+    /// Default paths, with `MS01CTL_SYSFS_*`, `MS01CTL_SMARTCTL` and
+    /// `MS01CTL_NVME_CLI` overrides applied.
     pub fn from_env() -> Self {
         let d = Self::default();
         Self {
-            hwmon: env_path("FANCURVE_SYSFS_HWMON", d.hwmon),
-            nvme: env_path("FANCURVE_SYSFS_NVME", d.nvme),
-            cpu: env_path("FANCURVE_SYSFS_CPU", d.cpu),
-            smartctl: env_path("FANCURVE_SMARTCTL", d.smartctl),
-            nvme_cli: env_path("FANCURVE_NVME_CLI", d.nvme_cli),
+            hwmon: env_path("MS01CTL_SYSFS_HWMON", d.hwmon),
+            nvme: env_path("MS01CTL_SYSFS_NVME", d.nvme),
+            cpu: env_path("MS01CTL_SYSFS_CPU", d.cpu),
+            smartctl: env_path("MS01CTL_SMARTCTL", d.smartctl),
+            nvme_cli: env_path("MS01CTL_NVME_CLI", d.nvme_cli),
         }
     }
 }

@@ -3,15 +3,15 @@
 # fan control loop, NVMe wear sampling and CPU profile switching — can be
 # exercised on any Linux machine without the real hardware.
 #
-#   ./dev/fake-sysfs.sh [root]     # default root: /tmp/fancurve-fake
-#   source /tmp/fancurve-fake/env.sh
+#   ./dev/fake-sysfs.sh [root]     # default root: /tmp/ms01ctl-fake
+#   source /tmp/ms01ctl-fake/env.sh
 #   cd server && cargo run
 #
 # Everything (config, SQLite history, chip snapshot) is written under the
 # fake root; the real /sys and /etc are never touched.
 set -euo pipefail
 
-root="${1:-/tmp/fancurve-fake}"
+root="${1:-/tmp/ms01ctl-fake}"
 sys="$root/sys"
 
 rm -rf "$root"
@@ -110,14 +110,14 @@ SH
 chmod +x "$sys/bin/smartctl"
 
 cat > "$root/env.sh" <<EOF
-# Source this to run fancurve against the fake sysfs tree.
-export FANCURVE_CONFIG="$root/etc/config.json"
-export FANCURVE_DB="$root/var/history.db"
-export FANCURVE_LISTEN="127.0.0.1:8090"
-export FANCURVE_SYSFS_HWMON="$sys/hwmon"
-export FANCURVE_SYSFS_NVME="$sys/nvme"
-export FANCURVE_SYSFS_CPU="$sys/cpu"
-export FANCURVE_SMARTCTL="$sys/bin/smartctl"
+# Source this to run ms01ctl against the fake sysfs tree.
+export MS01CTL_CONFIG="$root/etc/config.json"
+export MS01CTL_DB="$root/var/history.db"
+export MS01CTL_LISTEN="127.0.0.1:8090"
+export MS01CTL_SYSFS_HWMON="$sys/hwmon"
+export MS01CTL_SYSFS_NVME="$sys/nvme"
+export MS01CTL_SYSFS_CPU="$sys/cpu"
+export MS01CTL_SMARTCTL="$sys/bin/smartctl"
 EOF
 
 echo "fake MS-01 sysfs ready in $root"

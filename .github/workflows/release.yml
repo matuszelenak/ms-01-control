@@ -56,6 +56,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            server/target/debian/fancurve_*.deb \
-            --title "fancurve $GITHUB_REF_NAME" \
+            server/target/debian/ms01ctl_*.deb \
+            --title "ms01ctl $GITHUB_REF_NAME" \
             --generate-notes

@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn discovers_controllers_from_fake_sysfs() {
-        let root = std::env::temp_dir().join(format!("fancurve-nvme-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ms01ctl-nvme-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for (dev, model, serial) in [
             ("nvme0", "Force MP510", "204782480001291711F6"),

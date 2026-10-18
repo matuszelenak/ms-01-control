@@ -76,7 +76,7 @@
         </b>
       </span>
       {#if cpu.profile}
-        <span class="badge managed-badge">managed by fancurve</span>
+        <span class="badge managed-badge">managed by ms01ctl</span>
         <button class="unmanage" disabled={busy} onclick={() => onselect(null)}>
           stop managing
         </button>

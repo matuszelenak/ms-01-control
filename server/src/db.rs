@@ -12,8 +12,8 @@ use serde::Serialize;
 
 use crate::drives::{Drive, WearInfo};
 
-/// Default location; override with the FANCURVE_DB env var (empty disables).
-pub const DEFAULT_DB_PATH: &str = "/var/lib/fancurve/history.db";
+/// Default location; override with the MS01CTL_DB env var (empty disables).
+pub const DEFAULT_DB_PATH: &str = "/var/lib/ms01ctl/history.db";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS wear_samples (
@@ -84,9 +84,9 @@ impl Db {
     /// when history is disabled or the database cannot be opened — the
     /// service keeps running without history in that case.
     pub fn open_env() -> Option<Db> {
-        let path = match std::env::var_os("FANCURVE_DB") {
+        let path = match std::env::var_os("MS01CTL_DB") {
             Some(v) if v.is_empty() => {
-                tracing::info!("FANCURVE_DB is empty: wear history disabled");
+                tracing::info!("MS01CTL_DB is empty: wear history disabled");
                 return None;
             }
             Some(v) => PathBuf::from(v),
@@ -239,7 +239,7 @@ mod tests {
 
     fn temp_db(name: &str) -> (Db, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
-            "fancurve-db-{}-{name}-{}",
+            "ms01ctl-db-{}-{name}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

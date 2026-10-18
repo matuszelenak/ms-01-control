@@ -3,7 +3,7 @@ set -e
 
 # On purge, remove the saved fan curves, the CPU profile and the wear history.
 if [ "$1" = "purge" ]; then
-    rm -rf /etc/fancurve /var/lib/fancurve
+    rm -rf /etc/ms01ctl /var/lib/ms01ctl
 fi
 
 #DEBHELPER#

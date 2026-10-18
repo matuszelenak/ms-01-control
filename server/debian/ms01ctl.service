@@ -4,7 +4,7 @@ After=multi-user.target
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/fancurve
+ExecStart=/usr/bin/ms01ctl
 Restart=on-failure
 RestartSec=5
 # Hand fans back to hardware auto control if the service is stopped.
@@ -13,9 +13,9 @@ TimeoutStopSec=10
 # Hardening (/sys stays writable under ProtectSystem=strict; the config
 # directory and the wear history database need explicit exceptions)
 ProtectSystem=strict
-StateDirectory=fancurve
+StateDirectory=ms01ctl
 StateDirectoryMode=0750
-ReadWritePaths=/etc/fancurve
+ReadWritePaths=/etc/ms01ctl
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true

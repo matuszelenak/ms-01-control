@@ -1,5 +1,5 @@
 [package]
-name = "fancurve"
+name = "ms01ctl"
 version = "0.3.0"
 edition = "2021"
 description = "Fan, NVMe wear and CPU profile controller for MinisForum MS-01"
@@ -22,7 +22,7 @@ lto = true
 strip = true
 
 [package.metadata.deb]
-name = "fancurve"
+name = "ms01ctl"
 maintainer = "Matus Zelenak <Matus.Zelenak@swan.sk>"
 copyright = "2026, Matus Zelenak"
 license-file = ["../LICENSE", "0"]
@@ -39,9 +39,9 @@ depends = "smartmontools"
 # nvme-cli is an optional fallback when smartctl cannot read a drive
 recommends = "nvme-cli"
 assets = [
-    ["target/release/fancurve", "usr/bin/fancurve", "755"],
-    ["../README.md", "usr/share/doc/fancurve/README.md", "644"],
-    ["../LICENSE", "usr/share/doc/fancurve/LICENSE", "644"],
+    ["target/release/ms01ctl", "usr/bin/ms01ctl", "755"],
+    ["../README.md", "usr/share/doc/ms01ctl/README.md", "644"],
+    ["../LICENSE", "usr/share/doc/ms01ctl/LICENSE", "644"],
 ]
 maintainer-scripts = "debian"
-systemd-units = { unit-name = "fancurve", enable = true, start = true }
+systemd-units = { unit-name = "ms01ctl", enable = true, start = true }

@@ -446,7 +446,7 @@ mod tests {
     impl FakeSysfs {
         fn new(tag: &str) -> FakeSysfs {
             let dir =
-                std::env::temp_dir().join(format!("fancurve-hwmon-{tag}-{}", std::process::id()));
+                std::env::temp_dir().join(format!("ms01ctl-hwmon-{tag}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(dir.join("hwmon")).unwrap();
             fs::create_dir_all(dir.join("nvme/nvme0")).unwrap();
