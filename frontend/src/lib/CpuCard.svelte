@@ -10,23 +10,30 @@
 
   let { cpu, busy, warnings, onselect }: Props = $props()
 
-  const profiles: { value: CpuProfile; label: string; hint: string }[] = [
+  // The turbo part of the hints is only honest when the firmware lets us
+  // touch it: with a BIOS-locked turbo the profiles switch governor + EPP only.
+  const hints = $derived(
+    cpu.turbo_locked
+      ? { turbo: 'turbo off (locked by BIOS)', noTurbo: 'turbo off' }
+      : { turbo: 'turbo on', noTurbo: 'turbo off' },
+  )
+  const profiles = $derived<{ value: CpuProfile; label: string; hint: string }[]>([
     {
       value: 'performance',
       label: 'Performance',
-      hint: 'performance governor · EPP performance · turbo on',
+      hint: `performance governor · EPP performance · ${hints.turbo}`,
     },
     {
       value: 'balanced',
       label: 'Balanced',
-      hint: 'powersave governor · EPP balance_performance · turbo on',
+      hint: `powersave governor · EPP balance_performance · ${hints.turbo}`,
     },
     {
       value: 'efficiency',
       label: 'Efficiency',
-      hint: 'powersave governor · EPP power · turbo off',
+      hint: `powersave governor · EPP power · ${hints.noTurbo}`,
     },
-  ]
+  ])
 
   let supported = $derived(new Set(cpu.supported_profiles))
   let active = $derived(cpu.profile ?? cpu.effective)
@@ -74,6 +81,9 @@
         <b class:on={cpu.turbo === true} class:off={cpu.turbo === false}>
           {cpu.turbo === null ? 'n/a' : cpu.turbo ? 'on' : 'off'}
         </b>
+        {#if cpu.max_freq_mhz !== null}
+          <span class="extra">max {(cpu.max_freq_mhz / 1000).toFixed(1)} GHz</span>
+        {/if}
       </span>
       {#if cpu.profile}
         <span class="badge managed-badge">managed by ms01ctl</span>
@@ -84,6 +94,14 @@
         <span class="badge">not managed</span>
       {/if}
     </div>
+
+    {#if cpu.turbo_locked}
+      <p class="note">
+        Turbo is disabled by the firmware and cannot be enabled from the OS, so these profiles
+        only switch governor and EPP. To get turbo back, enable <b>Turbo Mode</b> in the BIOS
+        (Advanced → CPU - Power Management Control) and reboot.
+      </p>
+    {/if}
 
     {#if cpu.profile === null}
       <p class="note">
@@ -189,6 +207,9 @@
   }
   .state b.off {
     color: #9aa7ba;
+  }
+  .extra {
+    color: #5d6779;
   }
   .badge {
     font-size: 10px;

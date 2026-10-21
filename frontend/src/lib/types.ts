@@ -84,6 +84,10 @@ export interface CpuState {
   epp: string | null
   /** `true` = turbo enabled, `null` = no turbo knob on this platform. */
   turbo: boolean | null
+  /** `true` = turbo is off and locked by the firmware (BIOS setting). */
+  turbo_locked: boolean
+  /** Highest frequency reachable right now, MHz (base clock when turbo is off). */
+  max_freq_mhz: number | null
   available_governors: string[]
   available_epp: string[]
   supported_profiles: CpuProfile[]

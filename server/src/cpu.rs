@@ -15,6 +15,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{bail, Result};
 use serde::Serialize;
@@ -22,40 +23,63 @@ use serde::Serialize;
 use crate::config::CpuProfile;
 use crate::paths::Paths;
 
-/// A readable/writable turbo control.
-#[derive(Debug, Clone)]
-enum TurboKnob {
+/// How the platform exposes the turbo switch.
+#[derive(Debug, Clone, Copy)]
+enum TurboKind {
     /// `intel_pstate/no_turbo`: 1 disables turbo.
-    NoTurbo(PathBuf),
+    NoTurbo,
     /// `cpufreq/boost`: 0 disables turbo (acpi-cpufreq and friends).
-    Boost(PathBuf),
+    Boost,
+}
+
+/// A readable/writable turbo control.
+#[derive(Debug)]
+struct TurboKnob {
+    kind: TurboKind,
+    path: PathBuf,
+    /// Set once the kernel refused a write with EPERM: the firmware disabled
+    /// turbo at reset (`IA32_MISC_ENABLE` bit 38 — on the MS-01 the BIOS
+    /// "Turbo Mode" / boot performance mode setting) and `intel_pstate`
+    /// refuses to flip it. Only the BIOS can undo that, so further attempts
+    /// are pointless and must not turn into a warning on every profile switch.
+    locked: AtomicBool,
 }
 
 impl TurboKnob {
+    fn new(kind: TurboKind, path: PathBuf) -> Self {
+        Self { kind, path, locked: AtomicBool::new(false) }
+    }
+
     fn read(&self) -> Option<bool> {
-        let raw = read_trimmed(match self {
-            TurboKnob::NoTurbo(p) | TurboKnob::Boost(p) => p,
-        })?;
-        let value: i64 = raw.parse().ok()?;
-        Some(match self {
-            TurboKnob::NoTurbo(_) => value == 0,
-            TurboKnob::Boost(_) => value != 0,
+        let value: i64 = read_trimmed(&self.path)?.parse().ok()?;
+        Some(match self.kind {
+            TurboKind::NoTurbo => value == 0,
+            TurboKind::Boost => value != 0,
         })
     }
 
-    fn write(&self, enabled: bool) -> Result<()> {
-        let (path, value) = match self {
-            TurboKnob::NoTurbo(p) => (p, if enabled { 0 } else { 1 }),
-            TurboKnob::Boost(p) => (p, i32::from(enabled)),
+    /// `io::Error` kind is preserved so callers can tell a firmware lock
+    /// (EPERM) from a knob the driver rejected for other reasons.
+    fn write(&self, enabled: bool) -> std::io::Result<()> {
+        let value = match self.kind {
+            TurboKind::NoTurbo => i32::from(!enabled),
+            TurboKind::Boost => i32::from(enabled),
         };
-        fs::write(path, value.to_string())
-            .map_err(|e| anyhow::anyhow!("writing {}: {e}", path.display()))
+        fs::write(&self.path, value.to_string()).map_err(|e| {
+            std::io::Error::new(e.kind(), format!("writing {}: {e}", self.path.display()))
+        })
+    }
+
+    fn is_locked(&self) -> bool {
+        self.locked.load(Ordering::Relaxed)
+    }
+
+    fn lock(&self) {
+        self.locked.store(true, Ordering::Relaxed);
     }
 
     fn path(&self) -> &Path {
-        match self {
-            TurboKnob::NoTurbo(p) | TurboKnob::Boost(p) => p,
-        }
+        &self.path
     }
 }
 
@@ -71,6 +95,14 @@ pub struct CpuState {
     pub epp: Option<String>,
     /// `true` = turbo enabled. `null` = the platform exposes no turbo knob.
     pub turbo: Option<bool>,
+    /// `true` = turbo is off and the firmware refuses to change it (BIOS
+    /// setting, EPERM on write). The profiles then only switch governor and
+    /// EPP, which still makes them "effective".
+    pub turbo_locked: bool,
+    /// Highest frequency reachable right now, in MHz. With turbo disabled by
+    /// the firmware this is the base clock, which is the most direct way to
+    /// see that the turbo toggle has no effect.
+    pub max_freq_mhz: Option<u32>,
     pub available_governors: Vec<String>,
     pub available_epp: Vec<String>,
     /// Profiles this CPU can take.
@@ -81,16 +113,21 @@ pub struct CpuState {
 
 impl CpuProfile {
     /// Does a live CPU state correspond to this profile? The turbo toggle is
-    /// ignored when the platform does not expose one.
+    /// ignored when the platform does not expose one, or when the firmware
+    /// has locked it off (nothing the daemon can do about it).
     pub fn matches(self, state: &CpuState) -> bool {
         let governor_ok = state.governor.as_deref() == Some(self.governor());
         let epp_ok = match state.epp.as_deref() {
             Some(epp) => epp == self.epp(),
             None => true,
         };
-        let turbo_ok = match state.turbo {
-            Some(turbo) => turbo == self.turbo(),
-            None => true,
+        let turbo_ok = if state.turbo_locked {
+            true
+        } else {
+            match state.turbo {
+                Some(turbo) => turbo == self.turbo(),
+                None => true,
+            }
         };
         governor_ok && epp_ok && turbo_ok
     }
@@ -132,9 +169,9 @@ impl CpuControl {
             .map(|p| p.join("boost"))
             .filter(|p| p.exists());
         let turbo = if no_turbo.exists() {
-            Some(TurboKnob::NoTurbo(no_turbo))
+            Some(TurboKnob::new(TurboKind::NoTurbo, no_turbo))
         } else {
-            boost.map(TurboKnob::Boost)
+            boost.map(|p| TurboKnob::new(TurboKind::Boost, p))
         };
 
         if policies.is_empty() {
@@ -167,6 +204,11 @@ impl CpuControl {
             .map(|p| read_list(&p.join("energy_performance_available_preferences")))
             .unwrap_or_default();
         let turbo = self.turbo.as_ref().and_then(|t| t.read());
+        let turbo_locked = self.turbo.as_ref().is_some_and(TurboKnob::is_locked);
+        let max_freq_mhz = first
+            .and_then(|p| read_trimmed(&p.join("cpuinfo_max_freq")))
+            .and_then(|khz| khz.parse::<u64>().ok())
+            .map(|khz| (khz / 1000) as u32);
 
         let mut state = CpuState {
             profile: configured,
@@ -175,6 +217,8 @@ impl CpuControl {
             governor,
             epp,
             turbo,
+            turbo_locked,
+            max_freq_mhz,
             available_governors,
             available_epp,
             supported_profiles: Vec::new(),
@@ -268,11 +312,25 @@ impl CpuControl {
         }
 
         if let Some(turbo) = &self.turbo {
-            if let Err(e) = turbo.write(profile.turbo()) {
-                warnings.insert(format!(
-                    "turbo {}: {e}",
-                    if profile.turbo() { "enable" } else { "disable" }
-                ));
+            let want = profile.turbo();
+            let verb = if want { "enable" } else { "disable" };
+            if turbo.read() == Some(want) {
+                // Already in the desired state. This is also what firmware-
+                // locked turbo looks like when the profile wants it off.
+            } else if turbo.is_locked() {
+                // Known to be firmware-locked: reported through
+                // `CpuState::turbo_locked`, not as a warning on every switch.
+            } else if let Err(e) = turbo.write(want) {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    turbo.lock();
+                    warnings.insert(format!(
+                        "turbo {verb}: the firmware disabled turbo and only the BIOS can \
+                         re-enable it (MS-01: Advanced → CPU - Power Management Control → \
+                         Turbo Mode, then reboot); governor and EPP were applied"
+                    ));
+                } else {
+                    warnings.insert(format!("turbo {verb}: {e}"));
+                }
             }
         } else if profile.turbo() {
             warnings.insert("no turbo knob exposed by this kernel".into());
@@ -366,6 +424,85 @@ mod tests {
             CpuProfile::ALL.into_iter().find(|p| p.matches(&state)),
             Some(CpuProfile::Performance)
         );
+
+        // Turbo locked off by the firmware: governor/EPP still decide, so a
+        // profile reads as effective instead of a permanent mismatch.
+        let state = CpuState {
+            governor: Some("performance".into()),
+            epp: Some("performance".into()),
+            turbo: Some(false),
+            turbo_locked: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            CpuProfile::ALL.into_iter().find(|p| p.matches(&state)),
+            Some(CpuProfile::Performance)
+        );
+    }
+
+    /// One policy, an intel_pstate no_turbo knob and a base-clock
+    /// cpuinfo_max_freq — the MS-01 with turbo disabled in the BIOS.
+    fn locked_turbo_tree(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("ms01ctl-cpu-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("cpu0/cpufreq");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("scaling_driver"), "intel_pstate\n").unwrap();
+        fs::write(dir.join("scaling_governor"), "powersave\n").unwrap();
+        fs::write(dir.join("scaling_available_governors"), "performance powersave\n").unwrap();
+        fs::write(dir.join("energy_performance_preference"), "balance_power\n").unwrap();
+        fs::write(
+            dir.join("energy_performance_available_preferences"),
+            "default performance balance_performance balance_power power\n",
+        )
+        .unwrap();
+        fs::write(dir.join("cpuinfo_max_freq"), "2500000\n").unwrap();
+        fs::create_dir_all(root.join("intel_pstate")).unwrap();
+        fs::write(root.join("intel_pstate/no_turbo"), "1\n").unwrap();
+        root
+    }
+
+    #[test]
+    fn firmware_locked_turbo_goes_quiet_after_the_first_warning() {
+        let root = locked_turbo_tree("locked");
+        let paths = Paths { cpu: root.clone(), ..Default::default() };
+        let cpu = CpuControl::discover(&paths);
+
+        // Simulate the kernel refusing the turbo write with EPERM.
+        let turbo = cpu.turbo.as_ref().unwrap();
+        turbo.lock();
+
+        let warnings = cpu.apply(CpuProfile::Performance).unwrap();
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+        let state = cpu.state(Some(CpuProfile::Performance));
+        assert!(state.turbo_locked);
+        assert_eq!(state.turbo, Some(false));
+        assert_eq!(state.max_freq_mhz, Some(2500));
+        // Governor and EPP were applied, so the profile is effective.
+        assert_eq!(state.effective, Some(CpuProfile::Performance));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn other_turbo_write_failures_still_warn() {
+        // A no_turbo that cannot be read or written at all (here: a
+        // directory) is not a firmware lock and must not be masked.
+        let root = locked_turbo_tree("broken");
+        fs::remove_file(root.join("intel_pstate/no_turbo")).unwrap();
+        fs::create_dir_all(root.join("intel_pstate/no_turbo")).unwrap();
+
+        let paths = Paths { cpu: root.clone(), ..Default::default() };
+        let cpu = CpuControl::discover(&paths);
+        let warnings = cpu.apply(CpuProfile::Performance).unwrap();
+        assert!(
+            warnings.iter().any(|w| w.starts_with("turbo enable")),
+            "expected a turbo warning, got {warnings:?}"
+        );
+        assert!(!cpu.state(None).turbo_locked);
+
+        fs::remove_dir_all(&root).ok();
     }
 
     /// Build a fake cpu tree with two policies plus an intel_pstate no_turbo

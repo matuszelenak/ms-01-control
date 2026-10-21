@@ -102,6 +102,15 @@ Three profiles, applied to every cpufreq policy and the turbo knob:
 - Note: the `performance`/`balanced` profiles turn turbo on and `efficiency`
   turns it off — that is the point of the switch, but it does override a
   kernel command line or a previous manual setting.
+- **Firmware-locked turbo**: if the BIOS disabled turbo (`IA32_MISC_ENABLE` bit
+  38, set at reset — MS-01: *Advanced → CPU - Power Management Control → Turbo
+  Mode*), `intel_pstate` refuses `no_turbo` writes with `EPERM` and the kernel
+  logs *"Turbo disabled by BIOS or unavailable on processor"*. The daemon
+  detects that once, stops retrying (so a profile switch does not warn every
+  time), reports it as `turbo_locked` and still counts the profile as
+  effective because governor and EPP do apply. The UI then shows the turbo
+  state as locked and the reachable clock (`cpuinfo_max_freq`), which equals
+  the base frequency while turbo is off. Only the BIOS setting can undo it.
 
 ## Web UI
 

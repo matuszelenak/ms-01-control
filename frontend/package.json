@@ -1,7 +1,7 @@
 {
   "name": "ms01ctl-frontend",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "license": "Unlicense",
   "type": "module",
   "scripts": {
